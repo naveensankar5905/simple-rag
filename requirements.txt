@@ -1,9 +1,23 @@
 # ── Web UI ────────────────────────────────────────────────────────────────────
 streamlit>=1.35.0
 
-# ── PDF extraction ────────────────────────────────────────────────────────────
-pdfplumber>=0.11.0
-PyPDF2>=3.0.0
+# ── Document extraction ───────────────────────────────────────────────────────
+pymupdf>=1.24.0             # Primary PDF parser — fastest, best layout (import as fitz)
+pdfplumber>=0.11.0          # Secondary PDF — better table / column handling
+PyPDF2>=3.0.0               # Legacy PDF fallback
+python-docx>=1.1.0          # DOCX / DOC extraction
+
+# ── Image OCR ─────────────────────────────────────────────────────────────────
+rapidocr-onnxruntime>=1.3.0 # Primary OCR — ONNX Runtime, no PyTorch/Tesseract needed
+Pillow>=10.0.0              # Image loading
+easyocr>=1.7.0              # Fallback OCR (downloads EN model on first run)
+# pytesseract>=0.3.10       # Optional fallback — requires Tesseract binary
+
+# ── Audio / Video transcription ───────────────────────────────────────────────
+faster-whisper>=1.0.0       # Whisper STT via CTranslate2 — no PyTorch conflicts
+imageio-ffmpeg>=0.4.9       # Bundled ffmpeg binary — no system install needed
+# openai-whisper>=20231117  # Alternative STT (requires PyTorch version match)
+moviepy>=1.0.3              # Video → audio extraction (requires ffmpeg)
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
 sentence-transformers>=2.7.0
@@ -11,6 +25,18 @@ torch>=2.2.0
 
 # ── Vector database ───────────────────────────────────────────────────────────
 chromadb>=0.5.0
+
+# ── Agentic orchestration ─────────────────────────────────────────────────────
+langgraph>=0.2.0            # LangGraph StateGraph — agentic pipeline
+langchain-core>=0.3.0       # Required by LangGraph
+
+# ── Web search (agentic fallback) ─────────────────────────────────────────────
+tavily-python>=0.3.0        # Tavily API (primary web search — set TAVILY_API_KEY)
+duckduckgo-search>=6.0.0    # DuckDuckGo fallback — no API key required
+
+# ── Reranker ──────────────────────────────────────────────────────────────────
+# BAAI/bge-reranker-base is loaded via sentence-transformers (CrossEncoder)
+# No extra package needed — covered by sentence-transformers below
 
 # ── Evaluation metrics ────────────────────────────────────────────────────────
 rouge-score>=0.1.2          # ROUGE-1 / ROUGE-2 / ROUGE-L

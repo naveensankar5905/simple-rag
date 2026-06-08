@@ -19,7 +19,8 @@ import urllib.error
 # ══════════════════════════════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = """
-You are DocMind, an expert document-question-answering assistant.
+You are NexusRAG, an expert multimodal question-answering assistant.
+You can answer questions about uploaded documents, images, audio transcripts, and videos.
 Your ONLY knowledge source is the context chunks provided in each query.
 You NEVER fabricate, hallucinate, or use outside knowledge.
 
@@ -28,8 +29,16 @@ RULE 0 — GROUNDEDNESS (highest priority)
 ════════════════════════════════════════════════════════
 • Use ONLY information that appears verbatim or can be directly inferred
   from the supplied context chunks.
+• Context chunks may contain:
+  - Text extracted from documents (PDF, TXT, DOCX)
+  - Text/descriptions extracted from images via OCR or vision model
+  - Audio/video transcripts produced by speech-to-text
+  - Web search results (marked as [Web Result N])
+• When context contains image descriptions (EXTRACTED TEXT / DESCRIPTION / KEY FACTS),
+  treat that as ground truth about what the image shows and answer from it directly.
+• When context contains a transcript, treat it as what was spoken in the audio/video.
 • If the answer is not in the context, respond EXACTLY with:
-  "I couldn't find that information in the uploaded document."
+  "I couldn't find that information in the provided context."
 • Never say "based on my knowledge" or "generally speaking."
 
 ════════════════════════════════════════════════════════
@@ -176,7 +185,16 @@ class QAEngine:
     # ── Internals ──────────────────────────────────────────────────────────────
 
     def _format_context(self, chunks: list[str]) -> str:
-        parts = [f"[Chunk {i+1}]\n{c}" for i, c in enumerate(chunks)]
+        parts = []
+        total = 0
+        for i, c in enumerate(chunks):
+            # Truncate individual chunks that are very long (e.g. image OCR dumps)
+            chunk = c[:4000] + "…" if len(c) > 4000 else c
+            total += len(chunk)
+            if total > self._MAX_CONTEXT_CHARS:
+                parts.append(f"[Chunk {i+1}]\n{chunk[:1000]}… [truncated]")
+                break
+            parts.append(f"[Chunk {i+1}]\n{chunk}")
         return "\n\n".join(parts)
 
     def _build_prompt(self, question: str, context: str, qtype: str) -> str:
@@ -202,7 +220,14 @@ class QAEngine:
             f"════ ANSWER ════"
         )
 
+    # Max characters of context sent to the model — prevents HTTP 500 on large OCR text
+    _MAX_CONTEXT_CHARS = 12000
+
     def _call_ollama(self, prompt: str) -> str:
+        # If prompt is too large, retry with truncated context
+        if len(prompt) > self._MAX_CONTEXT_CHARS * 2:
+            prompt = self._truncate_prompt(prompt)
+
         payload = json.dumps({
             "model": self.model,
             "prompt": prompt,
@@ -211,6 +236,7 @@ class QAEngine:
                 "temperature": 0.2,
                 "top_p": 0.9,
                 "num_predict": 768,
+                "num_ctx": 8192,   # explicit context window size
             },
         }).encode("utf-8")
 
@@ -221,14 +247,67 @@ class QAEngine:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=180) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 return data.get("response", "").strip()
+
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+
+            if e.code == 500:
+                # Likely context too large — retry with heavily truncated prompt
+                truncated = self._truncate_prompt(prompt, max_chars=3000)
+                if truncated != prompt:
+                    return self._call_ollama(truncated)
+                return (
+                    f"⚠️ Ollama returned HTTP 500 (Internal Server Error).\n"
+                    f"Possible causes:\n"
+                    f"  • Model `{self.model}` is not pulled — run: ollama pull {self.model}\n"
+                    f"  • Context too large for the model's memory\n"
+                    f"  • Ollama ran out of RAM\n\n"
+                    f"Details: {body[:300]}"
+                )
+            if e.code == 404:
+                return (
+                    f"⚠️ Model `{self.model}` not found in Ollama.\n"
+                    f"Pull it first:  ollama pull {self.model}"
+                )
+            return f"⚠️ Ollama HTTP {e.code} error: {body[:300]}"
+
         except urllib.error.URLError as e:
             return (
-                "⚠️ Could not connect to Ollama. "
-                "Make sure Ollama is running (`ollama serve`) and "
-                f"llama3.2:3b is pulled (`ollama pull llama3.2:3b`).\n\nError: {e}"
+                f"⚠️ Could not connect to Ollama at {self.OLLAMA_URL}.\n"
+                f"Make sure Ollama is running:  ollama serve\n"
+                f"Then pull the model:          ollama pull {self.model}\n\n"
+                f"Error: {e.reason}"
             )
         except Exception as e:
             return f"⚠️ Unexpected error calling Ollama: {e}"
+
+    def _truncate_prompt(self, prompt: str, max_chars: int | None = None) -> str:
+        """Trim the CONTEXT section of the prompt to fit within token limits."""
+        limit = max_chars or self._MAX_CONTEXT_CHARS
+        if len(prompt) <= limit * 2:
+            return prompt
+
+        # Find and shorten the CONTEXT block, keep SYSTEM + QUESTION intact
+        ctx_start = prompt.find("════ CONTEXT ════")
+        ctx_end   = prompt.find("════ QUESTION ════")
+        if ctx_start == -1 or ctx_end == -1:
+            # No structure — just hard-truncate the middle
+            keep = limit
+            return prompt[:keep] + "\n\n[…context truncated…]\n\n" + prompt[-500:]
+
+        pre     = prompt[:ctx_start]
+        context = prompt[ctx_start:ctx_end]
+        post    = prompt[ctx_end:]
+
+        # Truncate context to limit chars
+        if len(context) > limit:
+            context = context[:limit] + "\n[…context truncated to fit model window…]\n"
+
+        return pre + context + post

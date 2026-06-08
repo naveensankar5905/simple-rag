@@ -1,7 +1,10 @@
 """
 document_processor.py
 ─────────────────────
-Handles PDF and TXT ingestion, text cleaning, and sliding-window chunking.
+Legacy PDF / TXT processor — kept for the existing test suite.
+
+For the full multimodal pipeline (PDF, TXT, Image, Audio, Video) use
+MultimodalProcessor from multimodal_processor.py instead.
 """
 
 from __future__ import annotations
